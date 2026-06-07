@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "668816548295",
+    "project_id": "eldn-olivia-dash",
+    "storage_bucket": "eldn-olivia-dash.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:668816548295:android:f14a8519a7e141faa739e2",
+        "android_client_info": {
+          "package_name": "com.example.olivia.olivia"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAtX7DmKO_vWV3QNXoKfmFjFpVvGyaMwNc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,8 @@
+{
+  "rules": {
+    "eldn": {
+      ".read": true,
+      ".write": true
+    }
+  }
+}
