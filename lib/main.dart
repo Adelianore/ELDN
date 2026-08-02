@@ -166,7 +166,7 @@ class _ELDNDashboardState extends State<ELDNDashboard>
   final fm.MapController _mapController = fm.MapController();
   final List<VictimData> _victims = [];
   bool _isConnected = false;
-  String? _debugStatus;
+
   int? _liveSoundValue;
   late StreamSubscription _connectionStream;
   StreamSubscription? _dbSubscription;
@@ -183,6 +183,7 @@ class _ELDNDashboardState extends State<ELDNDashboard>
 
   final Map<String, List<double>> _soundHistory = {};
   static const int _chartWindowSize = 50;
+  final ValueNotifier<int> _detailRefresh = ValueNotifier<int>(0);
 
   String get deviceStatus {
     if (_rawDeviceStatus == 'mati') return 'Mati';
@@ -216,9 +217,7 @@ class _ELDNDashboardState extends State<ELDNDashboard>
 
   Future<void> _initializeFirebase() async {
     // Firebase is already initialized in main() function. We only configure the DB client settings here.
-    setState(() {
-      _debugStatus = 'Menghubungkan ke Firebase...';
-    });
+    debugPrint('Menghubungkan ke Firebase...');
 
     final databaseUrl = FirebaseConfig.databaseUrl;
     final dbInstance = FirebaseDatabase.instanceFor(
@@ -249,8 +248,8 @@ class _ELDNDashboardState extends State<ELDNDashboard>
               debugPrint('Firebase connection status error: $error');
               setState(() {
                 _isConnected = false;
-                _debugStatus = 'Koneksi Firebase gagal: $error';
               });
+              debugPrint('Koneksi Firebase gagal: $error');
             },
           );
 
@@ -268,6 +267,9 @@ class _ELDNDashboardState extends State<ELDNDashboard>
                   VictimData._parseInt(data['vibrationCounter']) ?? 0;
               _lastDeviceHeartbeatTime = DateTime.now();
               setState(() {});
+              debugPrint(
+                'Device status=$_rawDeviceStatus vibration=$_vibrationState counter=$_vibrationCounter',
+              );
             }
           });
 
@@ -281,8 +283,8 @@ class _ELDNDashboardState extends State<ELDNDashboard>
       debugPrint('Firebase initialization failed: $error\n$stackTrace');
       setState(() {
         _isConnected = false;
-        _debugStatus = 'Firebase initialization error: $error';
       });
+      debugPrint('Firebase initialization error: $error');
     }
   }
 
@@ -293,9 +295,7 @@ class _ELDNDashboardState extends State<ELDNDashboard>
       _handleDatabaseEvent,
       onError: (error) {
         debugPrint('Firebase onValue error: $error');
-        setState(() {
-          _debugStatus = 'Firebase error: $error';
-        });
+        debugPrint('Firebase error: $error');
       },
     );
   }
@@ -321,23 +321,21 @@ class _ELDNDashboardState extends State<ELDNDashboard>
       setState(() {
         _victims.clear();
         _selectedVictim = null;
-        _debugStatus = 'Database kosong (null)';
       });
+      debugPrint('Database kosong (null)');
       return;
     }
 
     if (value is! Map) {
-      setState(() {
-        _debugStatus = 'Format data tidak dikenal: ${value.runtimeType}';
-      });
+      debugPrint('Format data tidak dikenal: ${value.runtimeType}');
       return;
     }
 
     final map = value.cast<dynamic, dynamic>();
     final List<VictimData> victims = _buildVictimsFromMap(map);
 
+    debugPrint('Data terdeteksi (List: ${victims.length} item)');
     setState(() {
-      _debugStatus = 'Data terdeteksi (List: ${victims.length} item)';
       _syncVictimsWithDatabase(victims);
     });
   }
@@ -476,6 +474,141 @@ class _ELDNDashboardState extends State<ELDNDashboard>
     });
   }
 
+  Future<void> _showVictimBottomSheet(VictimData victim) async {
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.7,
+          minChildSize: 0.45,
+          maxChildSize: 0.95,
+          builder: (context, controller) {
+            return Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF0B1220),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+              ),
+              padding: const EdgeInsets.all(16),
+              child: SingleChildScrollView(
+                controller: controller,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          victim.id.toUpperCase(),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.close, color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (victim.photoUrl != null)
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.network(
+                          victim.photoUrl!,
+                          height: 200,
+                          width: double.infinity,
+                          fit: BoxFit.cover,
+                        ),
+                      )
+                    else
+                      Container(
+                        height: 180,
+                        width: double.infinity,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.02),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Center(
+                          child: Icon(
+                            Icons.videocam_off_outlined,
+                            color: Colors.white24,
+                            size: 48,
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'SERIES SUARA REAL-TIME',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white54,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    ValueListenableBuilder<int>(
+                      valueListenable: _detailRefresh,
+                      builder: (context, value, child) {
+                        return _buildSoundChart(victim);
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    if (_liveSoundValue != null &&
+                        _selectedVictim?.id == victim.id) ...[
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.graphic_eq,
+                            color: Colors.amberAccent,
+                            size: 16,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Live suara: $_liveSoundValue / 4095',
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                            ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            _liveSoundValue! > 2500 ? 'TINGGI' : 'RENDAH',
+                            style: TextStyle(
+                              color: _liveSoundValue! > 2500
+                                  ? Colors.amberAccent
+                                  : Colors.greenAccent,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.redAccent,
+                        ),
+                        child: const Text('Tutup'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _appendSoundReading(String victimId, int value) {
     final history = _soundHistory.putIfAbsent(victimId, () => []);
     history.add(value.toDouble().clamp(0, 4095).toDouble());
@@ -485,6 +618,8 @@ class _ELDNDashboardState extends State<ELDNDashboard>
     if (_selectedVictim?.id == victimId) {
       _liveSoundValue = value.clamp(0, 4095);
     }
+    // Notify any open detail sheet to refresh its chart
+    _detailRefresh.value++;
   }
 
   List<double> _getSoundHistory(String victimId) {
@@ -896,172 +1031,10 @@ class _ELDNDashboardState extends State<ELDNDashboard>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: FittedBox(
-          fit: BoxFit.scaleDown,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: _isConnected ? Colors.greenAccent : Colors.redAccent,
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color:
-                          (_isConnected ? Colors.greenAccent : Colors.redAccent)
-                              .withValues(alpha: 0.6),
-                      blurRadius: 8,
-                      spreadRadius: 2,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              const Text(
-                "ELDN MONITOR",
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 18,
-                  letterSpacing: 0.8,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: (deviceStatus == 'Mati'
-                      ? Colors.grey.withValues(alpha: 0.12)
-                      : (deviceStatus == 'Mendeteksi'
-                            ? Colors.redAccent.withValues(alpha: 0.12)
-                            : Colors.greenAccent.withValues(alpha: 0.12))),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: (deviceStatus == 'Mati'
-                        ? Colors.white24
-                        : (deviceStatus == 'Mendeteksi'
-                              ? Colors.redAccent.withValues(alpha: 0.4)
-                              : Colors.greenAccent.withValues(alpha: 0.4))),
-                    width: 1,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        color: (deviceStatus == 'Mati'
-                            ? Colors.grey
-                            : (deviceStatus == 'Mendeteksi'
-                                  ? Colors.redAccent
-                                  : Colors.greenAccent)),
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      'ALAT: ${deviceStatus.toUpperCase()}',
-                      style: TextStyle(fontSize: 9, color: Colors.white70),
-                    ),
-                    const SizedBox(width: 8),
-                    // VIBRATION STATE CARD
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: _vibrationState == 'ON'
-                            ? Colors.redAccent.withValues(alpha: 0.15)
-                            : Colors.white.withValues(alpha: 0.04),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: _vibrationState == 'ON'
-                              ? Colors.redAccent
-                              : Colors.white24,
-                        ),
-                      ),
-                      child: Text(
-                        'GETARAN: $_vibrationState',
-                        style: TextStyle(
-                          fontSize: 9,
-                          color: _vibrationState == 'ON'
-                              ? Colors.redAccent
-                              : Colors.white70,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    // VIBRATION COUNTER CARD
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.blueAccent.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.blueAccent),
-                      ),
-                      child: Text(
-                        'KOUNTER: $_vibrationCounter',
-                        style: const TextStyle(
-                          fontSize: 9,
-                          color: Colors.blueAccent,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
+        title: const Text('ELDN MONITOR'),
         elevation: 0,
         centerTitle: true,
-        actions: kIsWeb
-            ? [
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                  child: Row(
-                    children: [
-                      Text(
-                        'Firebase: ${_isConnected ? "ON" : "OFF"}',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          color: _isConnected
-                              ? Colors.greenAccent
-                              : Colors.redAccent,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          'Total: ${_victims.length}',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.blueAccent,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ]
-            : null,
+        actions: null,
       ),
       body: _buildWebView(),
       floatingActionButton: FloatingActionButton(
@@ -1109,29 +1082,55 @@ class _ELDNDashboardState extends State<ELDNDashboard>
   }
 
   Widget _buildWebView() {
+    final isMobile = MediaQuery.of(context).size.width < 700;
+
+    if (isMobile) {
+      return Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          children: [
+            TabBar(
+              controller: _tabController,
+              labelColor: Colors.amberAccent,
+              unselectedLabelColor: Colors.white54,
+              indicatorColor: Colors.amberAccent,
+              tabs: const [
+                Tab(text: 'PETA TELEMETRI'),
+                Tab(text: 'DAFTAR KORBAN'),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  Card(
+                    elevation: 4,
+                    clipBehavior: Clip.antiAlias,
+                    child: _buildMapView(),
+                  ),
+                  Card(
+                    elevation: 4,
+                    child: Padding(
+                      padding: const EdgeInsets.all(12.0),
+                      child: _buildNodeListView(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Desktop/wide layout (unchanged)
     final selectedVictim =
         _selectedVictim ?? (_victims.isNotEmpty ? _victims.last : null);
-
     return Padding(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         children: [
-          if (_debugStatus != null) ...[
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.04),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-              ),
-              child: Text(
-                _debugStatus!,
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
-              ),
-            ),
-            const SizedBox(height: 16),
-          ],
           Expanded(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1347,7 +1346,15 @@ class _ELDNDashboardState extends State<ELDNDashboard>
 
         return InkWell(
           borderRadius: BorderRadius.circular(14),
-          onTap: () => _showVictimDetail(victim),
+          onTap: () {
+            final isMobileTap = MediaQuery.of(context).size.width < 700;
+            if (isMobileTap) {
+              setState(() => _selectedVictim = victim);
+              _showVictimBottomSheet(victim);
+            } else {
+              _showVictimDetail(victim);
+            }
+          },
           child: Container(
             decoration: BoxDecoration(
               color: isSelected
@@ -1448,6 +1455,8 @@ class _ELDNDashboardState extends State<ELDNDashboard>
     _deviceStatusSubscription?.cancel();
     _deviceStatusTimer?.cancel();
     _dbRefreshTimer?.cancel();
+    _detailRefresh.dispose();
+    _tabController.dispose();
     super.dispose();
   }
 }
