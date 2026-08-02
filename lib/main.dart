@@ -6,6 +6,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_map/flutter_map.dart' as fm;
 import 'package:latlong2/latlong.dart' as latlng;
 import 'package:intl/intl.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'config/firebase_config.dart';
 import 'theme.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -165,6 +166,8 @@ class _ELDNDashboardState extends State<ELDNDashboard>
   final fm.MapController _mapController = fm.MapController();
   final List<VictimData> _victims = [];
   bool _isConnected = false;
+  String? _debugStatus;
+  int? _liveSoundValue;
   late StreamSubscription _connectionStream;
   StreamSubscription? _dbSubscription;
   StreamSubscription? _deviceStatusSubscription;
@@ -176,10 +179,10 @@ class _ELDNDashboardState extends State<ELDNDashboard>
   Timer? _deviceStatusTimer;
   Timer? _dbRefreshTimer;
   final Map<String, DateTime> _firstSeenTimes = {};
-  String? _debugStatus;
   late TabController _tabController;
 
-  int? _liveSoundValue;
+  final Map<String, List<double>> _soundHistory = {};
+  static const int _chartWindowSize = 50;
 
   String get deviceStatus {
     if (_rawDeviceStatus == 'mati') return 'Mati';
@@ -259,18 +262,12 @@ class _ELDNDashboardState extends State<ELDNDashboard>
             final value = event.snapshot.value;
             if (value is Map) {
               final data = value.cast<dynamic, dynamic>();
-              final status = data['status']?.toString() ?? 'mati';
-              final liveSound = VictimData._parseInt(data['soundValue']);
-              final vibState = data['vibrationState']?.toString() ?? 'UNKNOWN';
-              final vibCount =
+              _rawDeviceStatus = data['status']?.toString() ?? 'mati';
+              _vibrationState = data['vibrationState']?.toString() ?? 'UNKNOWN';
+              _vibrationCounter =
                   VictimData._parseInt(data['vibrationCounter']) ?? 0;
-              setState(() {
-                _rawDeviceStatus = status;
-                _liveSoundValue = liveSound;
-                _vibrationState = vibState;
-                _vibrationCounter = vibCount;
-                _lastDeviceHeartbeatTime = DateTime.now();
-              });
+              _lastDeviceHeartbeatTime = DateTime.now();
+              setState(() {});
             }
           });
 
@@ -430,50 +427,6 @@ class _ELDNDashboardState extends State<ELDNDashboard>
     }
   }
 
-  void _handleVictimData(VictimData victim) {
-    // Terapkan koordinat first seen logic pada single victim juga
-    final coordKey =
-        "${victim.lat.toStringAsFixed(5)}_${victim.lng.toStringAsFixed(5)}";
-    if (!_firstSeenTimes.containsKey(coordKey)) {
-      _firstSeenTimes[coordKey] = victim.detectedAt;
-    }
-    final finalVictim = VictimData(
-      id: victim.id,
-      lat: victim.lat,
-      lng: victim.lng,
-      detectedAt: _firstSeenTimes[coordKey]!,
-      photoUrl: victim.photoUrl,
-      vibrationStatus: victim.vibrationStatus,
-      soundStatus: victim.soundStatus,
-      soundValue: victim.soundValue,
-    );
-
-    final index = _victims.indexWhere((v) => v.id == finalVictim.id);
-    if (index >= 0) {
-      _victims[index] = finalVictim;
-    } else {
-      _victims.add(finalVictim);
-    }
-
-    // Urutkan list korban secara numerik agar konsisten
-    _victims.sort((a, b) {
-      final aNum = int.tryParse(a.id.replaceAll(RegExp(r'\D'), '')) ?? 0;
-      final bNum = int.tryParse(b.id.replaceAll(RegExp(r'\D'), '')) ?? 0;
-      if (aNum != bNum) {
-        return aNum.compareTo(bNum);
-      }
-      return a.detectedAt.compareTo(b.detectedAt);
-    });
-
-    // Update marker
-    // Animate map camera ke lokasi terbaru HANYA jika user sedang aktif melihat tab Peta Telemetri (Tab 0)
-    if (_tabController.index == 0 &&
-        finalVictim.lat != 0.0 &&
-        finalVictim.lng != 0.0) {
-      _mapController.move(latlng.LatLng(finalVictim.lat, finalVictim.lng), 16);
-    }
-  }
-
   void _syncVictimsWithDatabase(List<VictimData> incomingVictims) {
     // Sinkronkan korban dengan data terbaru dari Firebase
     final incomingIds = incomingVictims.map((v) => v.id).toSet();
@@ -505,6 +458,10 @@ class _ELDNDashboardState extends State<ELDNDashboard>
       _selectedVictim = updatedSelected;
     }
 
+    for (final victim in incomingVictims) {
+      _appendSoundReading(victim.id, victim.soundValue ?? 0);
+    }
+
     if (_tabController.index == 0 && _victims.isNotEmpty) {
       final lastV = _victims.last;
       if (lastV.lat != 0.0 && lastV.lng != 0.0) {
@@ -514,22 +471,31 @@ class _ELDNDashboardState extends State<ELDNDashboard>
   }
 
   void _showVictimDetail(VictimData victim) {
-    if (kIsWeb) {
-      setState(() {
-        _selectedVictim = victim;
-      });
-    } else {
-      // Hanya tampilkan dialog detail korban tanpa berpindah tab atau mengubah fokus kamera peta
-      showDialog(
-        context: context,
-        builder: (context) => VictimDetailDialog(victim: victim),
-      );
+    setState(() {
+      _selectedVictim = victim;
+    });
+  }
+
+  void _appendSoundReading(String victimId, int value) {
+    final history = _soundHistory.putIfAbsent(victimId, () => []);
+    history.add(value.toDouble().clamp(0, 4095).toDouble());
+    if (history.length > _chartWindowSize) {
+      history.removeAt(0);
+    }
+    if (_selectedVictim?.id == victimId) {
+      _liveSoundValue = value.clamp(0, 4095);
     }
   }
 
-  Widget _buildWebDetailPanel() {
+  List<double> _getSoundHistory(String victimId) {
+    return List<double>.from(
+      _soundHistory[victimId] ?? List<double>.filled(_chartWindowSize, 0),
+    );
+  }
+
+  Widget _buildWebDetailPanel(VictimData? selectedVictim) {
     final victim =
-        _selectedVictim ?? (_victims.isNotEmpty ? _victims.last : null);
+        selectedVictim ?? (_victims.isNotEmpty ? _victims.last : null);
 
     if (victim == null) {
       return const Center(
@@ -636,9 +602,9 @@ class _ELDNDashboardState extends State<ELDNDashboard>
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.02),
+              color: Colors.white.withValues(alpha: 0.02),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white.withOpacity(0.06)),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
             ),
             child: Column(
               children: [
@@ -704,13 +670,13 @@ class _ELDNDashboardState extends State<ELDNDashboard>
                   ),
                   decoration: BoxDecoration(
                     color: hasVibration
-                        ? Colors.redAccent.withOpacity(0.12)
-                        : Colors.white.withOpacity(0.02),
+                        ? Colors.redAccent.withValues(alpha: 0.12)
+                        : Colors.white.withValues(alpha: 0.02),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(
                       color: hasVibration
-                          ? Colors.redAccent.withOpacity(0.4)
-                          : Colors.white.withOpacity(0.06),
+                          ? Colors.redAccent.withValues(alpha: 0.4)
+                          : Colors.white.withValues(alpha: 0.06),
                       width: 1.5,
                     ),
                   ),
@@ -751,13 +717,13 @@ class _ELDNDashboardState extends State<ELDNDashboard>
                   ),
                   decoration: BoxDecoration(
                     color: hasSound
-                        ? Colors.amberAccent.withOpacity(0.12)
-                        : Colors.white.withOpacity(0.02),
+                        ? Colors.amberAccent.withValues(alpha: 0.12)
+                        : Colors.white.withValues(alpha: 0.02),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(
                       color: hasSound
-                          ? Colors.amberAccent.withOpacity(0.4)
-                          : Colors.white.withOpacity(0.06),
+                          ? Colors.amberAccent.withValues(alpha: 0.4)
+                          : Colors.white.withValues(alpha: 0.06),
                       width: 1.5,
                     ),
                   ),
@@ -791,6 +757,45 @@ class _ELDNDashboardState extends State<ELDNDashboard>
               ),
             ],
           ),
+          const SizedBox(height: 20),
+
+          const Text(
+            'SERIES SUARA REAL-TIME',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: Colors.white54,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _buildSoundChart(victim),
+          if (_liveSoundValue != null) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                const Icon(
+                  Icons.graphic_eq,
+                  color: Colors.amberAccent,
+                  size: 16,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Live suara: $_liveSoundValue / 4095',
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+                const Spacer(),
+                Text(
+                  _liveSoundValue! > 2500 ? 'TINGGI' : 'RENDAH',
+                  style: TextStyle(
+                    color: _liveSoundValue! > 2500
+                        ? Colors.amberAccent
+                        : Colors.greenAccent,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 20),
 
           // Foto Korban
@@ -867,9 +872,9 @@ class _ELDNDashboardState extends State<ELDNDashboard>
       height: 140,
       width: double.infinity,
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.01),
+        color: Colors.white.withValues(alpha: 0.01),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withOpacity(0.05)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
       ),
       child: const Center(
         child: Column(
@@ -889,10 +894,6 @@ class _ELDNDashboardState extends State<ELDNDashboard>
 
   @override
   Widget build(BuildContext context) {
-    final lastDetected = _victims.isNotEmpty
-        ? DateFormat('dd/MM/yyyy HH:mm').format(_victims.last.detectedAt)
-        : 'Belum ada';
-
     return Scaffold(
       appBar: AppBar(
         title: FittedBox(
@@ -910,7 +911,7 @@ class _ELDNDashboardState extends State<ELDNDashboard>
                     BoxShadow(
                       color:
                           (_isConnected ? Colors.greenAccent : Colors.redAccent)
-                              .withOpacity(0.6),
+                              .withValues(alpha: 0.6),
                       blurRadius: 8,
                       spreadRadius: 2,
                     ),
@@ -931,17 +932,17 @@ class _ELDNDashboardState extends State<ELDNDashboard>
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: (deviceStatus == 'Mati'
-                      ? Colors.grey.withOpacity(0.12)
+                      ? Colors.grey.withValues(alpha: 0.12)
                       : (deviceStatus == 'Mendeteksi'
-                            ? Colors.redAccent.withOpacity(0.12)
-                            : Colors.greenAccent.withOpacity(0.12))),
+                            ? Colors.redAccent.withValues(alpha: 0.12)
+                            : Colors.greenAccent.withValues(alpha: 0.12))),
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
                     color: (deviceStatus == 'Mati'
                         ? Colors.white24
                         : (deviceStatus == 'Mendeteksi'
-                              ? Colors.redAccent.withOpacity(0.4)
-                              : Colors.greenAccent.withOpacity(0.4))),
+                              ? Colors.redAccent.withValues(alpha: 0.4)
+                              : Colors.greenAccent.withValues(alpha: 0.4))),
                     width: 1,
                   ),
                 ),
@@ -974,8 +975,8 @@ class _ELDNDashboardState extends State<ELDNDashboard>
                       ),
                       decoration: BoxDecoration(
                         color: _vibrationState == 'ON'
-                            ? Colors.redAccent.withOpacity(0.15)
-                            : Colors.white.withOpacity(0.04),
+                            ? Colors.redAccent.withValues(alpha: 0.15)
+                            : Colors.white.withValues(alpha: 0.04),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
                           color: _vibrationState == 'ON'
@@ -1001,7 +1002,7 @@ class _ELDNDashboardState extends State<ELDNDashboard>
                         vertical: 2,
                       ),
                       decoration: BoxDecoration(
-                        color: Colors.blueAccent.withOpacity(0.12),
+                        color: Colors.blueAccent.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: Colors.blueAccent),
                       ),
@@ -1044,7 +1045,7 @@ class _ELDNDashboardState extends State<ELDNDashboard>
                           vertical: 4,
                         ),
                         decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.06),
+                          color: Colors.white.withValues(alpha: 0.06),
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Text(
@@ -1062,237 +1063,7 @@ class _ELDNDashboardState extends State<ELDNDashboard>
               ]
             : null,
       ),
-      body: kIsWeb
-          ? _buildWebView()
-          : Column(
-              children: [
-                // Summary card
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12.0,
-                    vertical: 8.0,
-                  ),
-                  child: Card(
-                    elevation: 4,
-                    child: Padding(
-                      padding: const EdgeInsets.all(12.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Expanded(
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      _isConnected
-                                          ? Icons.cloud_done
-                                          : Icons.cloud_off,
-                                      color: _isConnected
-                                          ? Colors.greenAccent
-                                          : Colors.redAccent,
-                                      size: 24,
-                                    ),
-                                    const SizedBox(width: 10),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Text(
-                                            _isConnected
-                                                ? 'Cloud Sync: Aktif'
-                                                : 'Cloud Sync: Terputus',
-                                            style: const TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                              fontSize: 13,
-                                            ),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                          const SizedBox(height: 2),
-                                          Text(
-                                            'Aktifitas: $lastDetected',
-                                            style: const TextStyle(
-                                              fontSize: 10,
-                                              color: Colors.white38,
-                                            ),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              ElevatedButton.icon(
-                                onPressed: () async {
-                                  if (_victims.isNotEmpty) {
-                                    final v = _victims.last;
-                                    // Pindahkan tab ke Peta Telemetri (Tab 0) secara otomatis
-                                    _tabController.animateTo(0);
-                                    if (v.lat != 0.0 && v.lng != 0.0) {
-                                      _mapController.move(
-                                        latlng.LatLng(v.lat, v.lng),
-                                        16,
-                                      );
-                                    }
-                                  }
-                                },
-                                icon: const Icon(Icons.my_location, size: 14),
-                                label: Text(
-                                  _victims.isNotEmpty
-                                      ? 'Fokus: ${_victims.last.id.toUpperCase()}'
-                                      : 'Fokus',
-                                  style: const TextStyle(fontSize: 12),
-                                ),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFFEF4444),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 8,
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          if (deviceStatus != 'Mati') ...[
-                            if (_liveSoundValue != null) ...[
-                              const SizedBox(height: 10),
-                              const Divider(height: 1, color: Colors.white10),
-                              const SizedBox(height: 10),
-                              Row(
-                                children: [
-                                  const Icon(
-                                    Icons.mic_none,
-                                    size: 14,
-                                    color: Colors.amberAccent,
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    'Intensitas Suara Real-time: $_liveSoundValue',
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.white70,
-                                    ),
-                                  ),
-                                  const Spacer(),
-                                  Text(
-                                    _liveSoundValue! > 2500
-                                        ? 'BISING / SUARA KERAS'
-                                        : 'TENANG / AMAN',
-                                    style: TextStyle(
-                                      fontSize: 9,
-                                      fontWeight: FontWeight.bold,
-                                      color: _liveSoundValue! > 2500
-                                          ? Colors.amberAccent
-                                          : Colors.greenAccent,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(4),
-                                child: LinearProgressIndicator(
-                                  value: _liveSoundValue! / 4095.0,
-                                  minHeight: 6,
-                                  backgroundColor: Colors.white.withOpacity(
-                                    0.05,
-                                  ),
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                    _liveSoundValue! > 2500
-                                        ? Colors.amberAccent
-                                        : Colors.greenAccent,
-                                  ),
-                                ),
-                              ),
-                            ],
-                            const SizedBox(height: 10),
-                            const Divider(height: 1, color: Colors.white10),
-                            const SizedBox(height: 10),
-                            Row(
-                              children: [
-                                const Icon(
-                                  Icons.vibration,
-                                  size: 14,
-                                  color: Colors.cyanAccent,
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  'Sensor Getaran: $_vibrationState',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                    color: _vibrationState == 'ON'
-                                        ? Colors.redAccent
-                                        : Colors.cyanAccent,
-                                  ),
-                                ),
-                                const Spacer(),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                    vertical: 2,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.blueAccent.withOpacity(0.12),
-                                    borderRadius: BorderRadius.circular(6),
-                                    border: Border.all(
-                                      color: Colors.blueAccent.withOpacity(0.3),
-                                    ),
-                                  ),
-                                  child: Text(
-                                    'Ketukan: $_vibrationCounter',
-                                    style: const TextStyle(
-                                      fontSize: 9,
-                                      color: Colors.blueAccent,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                TabBar(
-                  controller: _tabController,
-                  dividerColor: Colors.transparent,
-                  indicatorColor: Colors.redAccent,
-                  labelColor: Colors.redAccent,
-                  unselectedLabelColor: Colors.white38,
-                  indicatorSize: TabBarIndicatorSize.tab,
-                  tabs: [
-                    const Tab(
-                      icon: Icon(Icons.map_outlined),
-                      text: 'PETA TELEMETRI',
-                    ),
-                    Tab(
-                      icon: const Icon(Icons.list_alt_outlined),
-                      text: 'DAFTAR KORBAN (${_victims.length})',
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Expanded(
-                  child: TabBarView(
-                    controller: _tabController,
-                    children: [_buildMapView(), _buildListView()],
-                  ),
-                ),
-              ],
-            ),
+      body: _buildWebView(),
       floatingActionButton: FloatingActionButton(
         onPressed: () async {
           final confirm = await showDialog<bool>(
@@ -1338,374 +1109,170 @@ class _ELDNDashboardState extends State<ELDNDashboard>
   }
 
   Widget _buildWebView() {
+    final selectedVictim =
+        _selectedVictim ?? (_victims.isNotEmpty ? _victims.last : null);
+
     return Padding(
       padding: const EdgeInsets.all(16.0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Column(
         children: [
-          // PANEL 1: SIDEBAR (List & Stats) - Menaikkan flex ke 4 agar sidebar lebih lapang dan bebas overflow
-          Expanded(
-            flex: 4,
-            child: Card(
-              elevation: 4,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: Colors.redAccent.withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Icon(
-                            Icons.radar,
-                            color: Colors.redAccent,
-                            size: 24,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        const Expanded(
-                          // Dibungkus Expanded untuk mencegah overflow teks di sisi kanan
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'ELDN SYSTEM',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  letterSpacing: 1,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              Text(
-                                'Pusat Pemantauan Darurat',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.white38,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.01),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: Colors.white.withOpacity(0.05),
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          _buildStatColumn(
-                            'STATUS CLOUD',
-                            _isConnected ? 'ONLINE' : 'OFFLINE',
-                            _isConnected
-                                ? Colors.greenAccent
-                                : Colors.redAccent,
-                          ),
-                          Container(
-                            width: 1,
-                            height: 30,
-                            color: Colors.white10,
-                          ),
-                          _buildStatColumn(
-                            'STATUS ALAT',
-                            deviceStatus.toUpperCase(),
-                            deviceStatus == 'Mati'
-                                ? Colors.grey
-                                : (deviceStatus == 'Mendeteksi'
-                                      ? Colors.redAccent
-                                      : Colors.greenAccent),
-                          ),
-                          Container(
-                            width: 1,
-                            height: 30,
-                            color: Colors.white10,
-                          ),
-                          _buildStatColumn(
-                            'TOTAL DETEKSI',
-                            '${_victims.length}',
-                            Colors.blueAccent,
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    if (deviceStatus != 'Mati') ...[
-                      if (_liveSoundValue != null) ...[
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.01),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: Colors.white.withOpacity(0.05),
-                            ),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  const Icon(
-                                    Icons.mic_none,
-                                    size: 14,
-                                    color: Colors.amberAccent,
-                                  ),
-                                  const SizedBox(width: 6),
-                                  const Text(
-                                    'LIVE INTENSITAS SUARA',
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.white38,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  const Spacer(),
-                                  Text(
-                                    '$_liveSoundValue',
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(4),
-                                child: LinearProgressIndicator(
-                                  value: _liveSoundValue! / 4095.0,
-                                  minHeight: 6,
-                                  backgroundColor: Colors.white.withOpacity(
-                                    0.05,
-                                  ),
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                    _liveSoundValue! > 2500
-                                        ? Colors.amberAccent
-                                        : Colors.greenAccent,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                      ],
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.01),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: Colors.white.withOpacity(0.05),
-                          ),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(
-                              Icons.vibration,
-                              size: 14,
-                              color: Colors.cyanAccent,
-                            ),
-                            const SizedBox(width: 6),
-                            const Text(
-                              'LIVE STATUS GETARAN',
-                              style: TextStyle(
-                                fontSize: 10,
-                                color: Colors.white38,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const Spacer(),
-                            Text(
-                              _vibrationState,
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                                color: _vibrationState == 'ON'
-                                    ? Colors.redAccent
-                                    : Colors.cyanAccent,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                                vertical: 2,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.blueAccent.withOpacity(0.12),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(
-                                  color: Colors.blueAccent.withOpacity(0.3),
-                                ),
-                              ),
-                              child: Text(
-                                'Ketukan: $_vibrationCounter',
-                                style: const TextStyle(
-                                  fontSize: 9,
-                                  color: Colors.blueAccent,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-                    const Text(
-                      'DAFTAR AKTIVITAS KORBAN',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white54,
-                        letterSpacing: 0.8,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Expanded(child: _buildListView()),
-                  ],
-                ),
+          if (_debugStatus != null) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.04),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+              ),
+              child: Text(
+                _debugStatus!,
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
               ),
             ),
-          ),
-          const SizedBox(width: 16),
-
-          // PANEL 2: MAP VIEW
+            const SizedBox(height: 16),
+          ],
           Expanded(
-            flex: 5,
-            child: Card(
-              elevation: 4,
-              clipBehavior: Clip.antiAlias,
-              child: Stack(
-                children: [
-                  _buildMapView(),
-                  // Top overlay stats bar
-                  Positioned(
-                    top: 16,
-                    left: 16,
-                    right: 16,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF0F172A).withOpacity(0.85),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: Colors.white.withOpacity(0.08),
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.25),
-                            blurRadius: 10,
-                            offset: const Offset(0, 4),
-                          ),
-                        ],
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // PANEL 1: NODE LIST ONLY
+                Expanded(
+                  flex: 4,
+                  child: Card(
+                    elevation: 4,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Row(
-                            children: [
-                              Container(
-                                width: 8,
-                                height: 8,
-                                decoration: BoxDecoration(
-                                  color: _isConnected
-                                      ? Colors.greenAccent
-                                      : Colors.redAccent,
-                                  shape: BoxShape.circle,
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color:
-                                          (_isConnected
-                                                  ? Colors.greenAccent
-                                                  : Colors.redAccent)
-                                              .withOpacity(0.5),
-                                      blurRadius: 6,
-                                      spreadRadius: 2,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Text(
-                                _isConnected
-                                    ? 'Koneksi Cloud Aktif'
-                                    : 'Terputus dari Firebase',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
+                          const Text(
+                            'Available Nodes',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
                           ),
-                          Text(
-                            'Update Terakhir: ${_victims.isNotEmpty ? DateFormat('HH:mm:ss').format(_victims.last.detectedAt) : "Tidak Ada"}',
-                            style: const TextStyle(
-                              fontSize: 11,
+                          const SizedBox(height: 10),
+                          const Text(
+                            'Tap a node to select it and show details on the right.',
+                            style: TextStyle(
+                              fontSize: 12,
                               color: Colors.white54,
                             ),
                           ),
+                          const SizedBox(height: 16),
+                          Expanded(child: _buildNodeListView()),
                         ],
                       ),
                     ),
                   ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(width: 16),
+                ),
+                const SizedBox(width: 16),
 
-          // PANEL 3: TELEMETRY DETAIL
-          Expanded(
-            flex: 4,
-            child: Card(elevation: 4, child: _buildWebDetailPanel()),
+                // PANEL 2: MAP VIEW
+                Expanded(
+                  flex: 5,
+                  child: Card(
+                    elevation: 4,
+                    clipBehavior: Clip.antiAlias,
+                    child: Stack(
+                      children: [
+                        _buildMapView(),
+                        Positioned(
+                          top: 16,
+                          left: 16,
+                          right: 16,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 12,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(
+                                0xFF0F172A,
+                              ).withValues(alpha: 0.85),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.08),
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.25),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Row(
+                                  children: [
+                                    Container(
+                                      width: 8,
+                                      height: 8,
+                                      decoration: BoxDecoration(
+                                        color: _isConnected
+                                            ? Colors.greenAccent
+                                            : Colors.redAccent,
+                                        shape: BoxShape.circle,
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color:
+                                                (_isConnected
+                                                        ? Colors.greenAccent
+                                                        : Colors.redAccent)
+                                                    .withValues(alpha: 0.5),
+                                            blurRadius: 6,
+                                            spreadRadius: 2,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Text(
+                                      _isConnected
+                                          ? 'Koneksi Cloud Aktif'
+                                          : 'Terputus dari Firebase',
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                Text(
+                                  'Update Terakhir: ${_victims.isNotEmpty ? DateFormat('HH:mm:ss').format(_victims.last.detectedAt) : "Tidak Ada"}',
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.white54,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 16),
+
+                // PANEL 3: TELEMETRY DETAIL
+                Expanded(
+                  flex: 4,
+                  child: Card(
+                    elevation: 4,
+                    child: _buildWebDetailPanel(selectedVictim),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildStatColumn(String label, String value, Color color) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 10,
-            color: Colors.white38,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-            color: color,
-          ),
-        ),
-      ],
     );
   }
 
@@ -1754,16 +1321,16 @@ class _ELDNDashboardState extends State<ELDNDashboard>
     );
   }
 
-  Widget _buildListView() {
+  Widget _buildNodeListView() {
     if (_victims.isEmpty) {
       return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.location_off, size: 54, color: Colors.white24),
+            Icon(Icons.devices_outlined, size: 54, color: Colors.white24),
             SizedBox(height: 16),
             Text(
-              'Belum ada korban terdeteksi',
+              'Tidak ada node tersedia',
               style: TextStyle(fontSize: 14, color: Colors.white30),
             ),
           ],
@@ -1771,15 +1338,106 @@ class _ELDNDashboardState extends State<ELDNDashboard>
       );
     }
 
-    return ListView.builder(
+    return ListView.separated(
       itemCount: _victims.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 10),
       itemBuilder: (context, index) {
         final victim = _victims[_victims.length - 1 - index];
-        return VictimListTile(
-          victim: victim,
+        final isSelected = _selectedVictim?.id == victim.id;
+
+        return InkWell(
+          borderRadius: BorderRadius.circular(14),
           onTap: () => _showVictimDetail(victim),
+          child: Container(
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? Colors.white.withValues(alpha: 0.04)
+                  : Colors.white.withValues(alpha: 0.02),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: isSelected
+                    ? Colors.amberAccent
+                    : Colors.white.withValues(alpha: 0.08),
+              ),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.graphic_eq,
+                  color: isSelected ? Colors.amberAccent : Colors.white54,
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        victim.id.toUpperCase(),
+                        style: TextStyle(
+                          color: isSelected ? Colors.white : Colors.white70,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Terakhir: ${DateFormat('HH:mm:ss').format(victim.detectedAt)}',
+                        style: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.chevron_right, color: Colors.white24),
+              ],
+            ),
+          ),
         );
       },
+    );
+  }
+
+  Widget _buildSoundChart(VictimData victim) {
+    final history = _getSoundHistory(victim.id);
+    return SizedBox(
+      height: 220,
+      child: LineChart(
+        LineChartData(
+          minY: 0,
+          maxY: 4095,
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            getDrawingHorizontalLine: (value) =>
+                FlLine(color: Colors.white12, strokeWidth: 1),
+          ),
+          borderData: FlBorderData(show: false),
+          titlesData: FlTitlesData(
+            leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          ),
+          lineBarsData: [
+            LineChartBarData(
+              spots: List.generate(
+                history.length,
+                (index) => FlSpot(index.toDouble(), history[index]),
+              ),
+              isCurved: true,
+              color: Colors.amberAccent,
+              barWidth: 2.8,
+              dotData: const FlDotData(show: false),
+              belowBarData: BarAreaData(
+                show: true,
+                color: Colors.amberAccent.withValues(alpha: 0.16),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1822,8 +1480,8 @@ class VictimListTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         side: BorderSide(
           color: (hasVibration || hasSound)
-              ? Colors.redAccent.withOpacity(0.3)
-              : Colors.white.withOpacity(0.06),
+              ? Colors.redAccent.withValues(alpha: 0.3)
+              : Colors.white.withValues(alpha: 0.06),
           width: 1.2,
         ),
       ),
@@ -1876,7 +1534,7 @@ class VictimListTile extends StatelessWidget {
                             width: 48,
                             height: 48,
                             decoration: BoxDecoration(
-                              color: Colors.redAccent.withOpacity(0.12),
+                              color: Colors.redAccent.withValues(alpha: 0.12),
                               borderRadius: BorderRadius.circular(10),
                             ),
                             child: const Icon(
@@ -1992,13 +1650,13 @@ class VictimListTile extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
         color: isActive
-            ? statusColor.withOpacity(0.12)
-            : Colors.white.withOpacity(0.04),
+            ? statusColor.withValues(alpha: 0.12)
+            : Colors.white.withValues(alpha: 0.04),
         borderRadius: BorderRadius.circular(6),
         border: Border.all(
           color: isActive
-              ? statusColor.withOpacity(0.3)
-              : Colors.white.withOpacity(0.05),
+              ? statusColor.withValues(alpha: 0.3)
+              : Colors.white.withValues(alpha: 0.05),
         ),
       ),
       child: Row(
@@ -2167,9 +1825,11 @@ class VictimDetailDialog extends StatelessWidget {
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Colors.blue.withOpacity(0.08),
+                    color: Colors.blue.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                    border: Border.all(
+                      color: Colors.blue.withValues(alpha: 0.3),
+                    ),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,

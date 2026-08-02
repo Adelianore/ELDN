@@ -1,7 +1,6 @@
-// ignore: avoid_web_libraries_in_flutter
-import 'dart:html' as html;
+import 'package:web/web.dart';
 
 /// Opens a URL in a new browser tab on Web platform.
 void openUrl(String url) {
-  html.window.open(url, '_blank');
+  window.open(url, '_blank');
 }

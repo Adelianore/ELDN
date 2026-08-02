@@ -15,7 +15,7 @@ final ThemeData appTheme = ThemeData(
     elevation: 4,
     shape: RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(16),
-      side: BorderSide(color: Colors.white.withOpacity(0.08), width: 1),
+      side: BorderSide(color: Colors.white.withValues(alpha: 0.08), width: 1),
     ),
   ),
   appBarTheme: const AppBarTheme(
@@ -38,7 +38,7 @@ final ThemeData appTheme = ThemeData(
         borderRadius: BorderRadius.circular(12),
       ),
       elevation: 6,
-      shadowColor: const Color(0xFFEF4444).withOpacity(0.4),
+      shadowColor: const Color(0xFFEF4444).withValues(alpha: 0.4),
     ),
   ),
 );
