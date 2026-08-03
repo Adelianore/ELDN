@@ -8,7 +8,9 @@ import 'package:latlong2/latlong.dart';
 
 import '../services/local_database.dart';
 import '../services/local_http_server.dart';
+import '../services/network_info.dart';
 import '../services/serial_listener.dart';
+import 'posko_client_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key, required this.database});
@@ -27,6 +29,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String? _selectedPort;
   final List<Map<String, dynamic>> _logs = [];
   final List<Map<String, dynamic>> _nodes = [];
+  String? selectedNodeId;
+  String _localIp = 'Memuat...';
 
   bool get _supportsSerial {
     if (kIsWeb) return false;
@@ -42,8 +46,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _serverStatus = 'Memulai...';
   String _serialStatus = 'Belum terhubung';
   bool _isConnecting = false;
-  String? _lastRawLine;
-  String? _lastSerialError;
   StreamSubscription<String>? _rawSub;
   StreamSubscription<String>? _errSub;
   final List<String> _rawHistory = [];
@@ -51,6 +53,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+    _loadLocalIp();
     _startServer();
     if (_supportsSerial) {
       _availablePorts = SerialPortListener.availablePorts;
@@ -84,7 +87,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
 
       setState(() {
-        _lastRawLine = line;
         _rawHistory.insert(0, line);
         if (_rawHistory.length > 10) _rawHistory.removeLast();
       });
@@ -92,7 +94,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _errSub = _serialListener.onError.listen((err) {
       if (!mounted) return;
       setState(() {
-        _lastSerialError = err;
+        // Serial error state not tracked in UI.
       });
     });
   }
@@ -107,6 +109,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _httpServer.stop();
     _portController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadLocalIp() async {
+    final ip = await NetworkInfo.getLocalIpv4Address();
+    if (!mounted) return;
+    setState(() {
+      _localIp = ip ?? 'Tidak terdeteksi';
+    });
   }
 
   Future<void> _startServer() async {
@@ -135,6 +145,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _nodes
         ..clear()
         ..addAll(nodes);
+      if (selectedNodeId == null && _nodes.isNotEmpty) {
+        selectedNodeId = _nodes.first['node_id']?.toString();
+      }
     });
   }
 
@@ -201,51 +214,290 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  Widget _buildStatusTile(String label, String value, Color color) {
-    return Expanded(
+  List<Map<String, dynamic>> _logsForSelectedNode() {
+    if (selectedNodeId == null) {
+      return _logs;
+    }
+    return _logs
+        .where((log) => log['node_id']?.toString() == selectedNodeId)
+        .toList();
+  }
+
+  Widget _buildCompactStatusBadge(String label, String value, Color color) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minWidth: 100, maxWidth: 260),
       child: Container(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              color.withValues(alpha: 0.22),
-              color.withValues(alpha: 0.08),
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
+          color: color.withValues(alpha: 0.16),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: color.withValues(alpha: 0.4)),
-          boxShadow: [
-            BoxShadow(
-              color: color.withValues(alpha: 0.12),
-              blurRadius: 12,
-              spreadRadius: 1,
-            ),
-          ],
+          border: Border.all(color: color.withValues(alpha: 0.35)),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Text(
               label,
               style: const TextStyle(
                 color: Colors.white70,
-                fontSize: 12,
-                letterSpacing: 0.3,
+                fontSize: 11,
+                letterSpacing: 0.4,
               ),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 4),
             Text(
               value,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
-                fontSize: 18,
+                fontSize: 14,
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildHeaderBadgesInline() {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(right: 12.0),
+          child: _buildCompactStatusBadge(
+            'IP',
+            _localIp == 'Tidak terdeteksi' ? '-' : _localIp,
+            Colors.blueAccent,
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(right: 12.0),
+          child: _buildCompactStatusBadge(
+            'Server',
+            _serverStatus,
+            Colors.greenAccent,
+          ),
+        ),
+        _buildCompactStatusBadge('Serial', _serialStatus, Colors.cyanAccent),
+      ],
+    );
+  }
+
+  Widget _buildSerialControlCard(bool isWide) {
+    return Card(
+      color: const Color(0xFF101725),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(14.0),
+        child: isWide
+            ? Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      initialValue: _selectedPort,
+                      decoration: InputDecoration(
+                        labelText: 'Port Serial',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        filled: true,
+                        fillColor: const Color(0xFF0D1321),
+                      ),
+                      dropdownColor: const Color(0xFF0D1321),
+                      style: const TextStyle(color: Colors.white),
+                      items: _availablePorts.isEmpty
+                          ? [
+                              const DropdownMenuItem(
+                                value: null,
+                                child: Text(
+                                  'Tidak ada port tersedia',
+                                  style: TextStyle(color: Colors.white60),
+                                ),
+                              ),
+                            ]
+                          : _availablePorts
+                                .map(
+                                  (p) => DropdownMenuItem(
+                                    value: p,
+                                    child: Text(
+                                      p,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                      onChanged: (v) {
+                        setState(() {
+                          _selectedPort = v;
+                          if (v != null) {
+                            _portController.text = v;
+                          }
+                        });
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  IconButton(
+                    onPressed: () {
+                      setState(() {
+                        _availablePorts = SerialPortListener.availablePorts;
+                        if (_availablePorts.isNotEmpty) {
+                          _selectedPort = _availablePorts.first;
+                          _portController.text = _selectedPort!;
+                        } else {
+                          _selectedPort = null;
+                          _portController.clear();
+                        }
+                      });
+                    },
+                    icon: const Icon(Icons.refresh, color: Colors.white),
+                    style: IconButton.styleFrom(
+                      backgroundColor: const Color(0xFF12233d),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  ElevatedButton.icon(
+                    onPressed: _isConnecting
+                        ? null
+                        : (_serialListener.isRunning
+                              ? _disconnectSerial
+                              : _connectSerial),
+                    icon: Icon(
+                      _serialListener.isRunning
+                          ? Icons.close_rounded
+                          : Icons.link_rounded,
+                      color: Colors.white,
+                    ),
+                    label: Text(
+                      _serialListener.isRunning ? 'Putuskan' : 'Hubungkan',
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFef4444),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 16,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ],
+              )
+            : Column(
+                children: [
+                  DropdownButtonFormField<String>(
+                    initialValue: _selectedPort,
+                    decoration: InputDecoration(
+                      labelText: 'Port Serial',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      filled: true,
+                      fillColor: const Color(0xFF0D1321),
+                    ),
+                    dropdownColor: const Color(0xFF0D1321),
+                    style: const TextStyle(color: Colors.white),
+                    items: _availablePorts.isEmpty
+                        ? [
+                            const DropdownMenuItem(
+                              value: null,
+                              child: Text(
+                                'Tidak ada port tersedia',
+                                style: TextStyle(color: Colors.white60),
+                              ),
+                            ),
+                          ]
+                        : _availablePorts
+                              .map(
+                                (p) => DropdownMenuItem(
+                                  value: p,
+                                  child: Text(
+                                    p,
+                                    style: const TextStyle(color: Colors.white),
+                                  ),
+                                ),
+                              )
+                              .toList(),
+                    onChanged: (v) {
+                      setState(() {
+                        _selectedPort = v;
+                        if (v != null) {
+                          _portController.text = v;
+                        }
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      IconButton(
+                        onPressed: () {
+                          setState(() {
+                            _availablePorts = SerialPortListener.availablePorts;
+                            if (_availablePorts.isNotEmpty) {
+                              _selectedPort = _availablePorts.first;
+                              _portController.text = _selectedPort!;
+                            } else {
+                              _selectedPort = null;
+                              _portController.clear();
+                            }
+                          });
+                        },
+                        icon: const Icon(Icons.refresh, color: Colors.white),
+                        style: IconButton.styleFrom(
+                          backgroundColor: const Color(0xFF12233d),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _isConnecting
+                              ? null
+                              : (_serialListener.isRunning
+                                    ? _disconnectSerial
+                                    : _connectSerial),
+                          icon: Icon(
+                            _serialListener.isRunning
+                                ? Icons.close_rounded
+                                : Icons.link_rounded,
+                            color: Colors.white,
+                          ),
+                          label: Text(
+                            _serialListener.isRunning
+                                ? 'Putuskan'
+                                : 'Hubungkan',
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFef4444),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 16,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
       ),
     );
   }
@@ -255,15 +507,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF07101d),
       appBar: AppBar(
-        title: const Text('ELDN Local Edge Dashboard'),
-        centerTitle: true,
-        elevation: 0,
+        toolbarHeight: 118,
         backgroundColor: const Color(0xFF0b1730),
+        elevation: 0,
+        centerTitle: true,
         titleTextStyle: const TextStyle(
           color: Colors.white,
           fontSize: 24,
           fontWeight: FontWeight.bold,
         ),
+        title: Row(
+          children: [
+            // Left inline badges
+            _buildHeaderBadgesInline(),
+            Expanded(child: Center(child: const Text('VITALIS DASHBOARD'))),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pushNamed(PoskoClientScreen.routeName);
+            },
+            child: const Text(
+              'Mobile Client',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
       ),
       body: Container(
         decoration: const BoxDecoration(
@@ -274,476 +544,67 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         ),
         child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 18, 18, 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final isWide = constraints.maxWidth >= 980;
+              return SingleChildScrollView(
+                physics: const BouncingScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(18, 8, 18, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    _buildStatusTile(
-                      'Server HTTP',
-                      _serverStatus,
-                      Colors.greenAccent,
-                    ),
-                    const SizedBox(width: 12),
-                    _buildStatusTile(
-                      'Serial Port',
-                      _serialStatus,
-                      Colors.cyanAccent,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0d1a31),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: Colors.white10),
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: DropdownButtonFormField<String>(
-                          initialValue: _selectedPort,
-                          decoration: InputDecoration(
-                            labelText: 'Nama Port Serial',
-                            hintText: 'Pilih port serial aktif',
-                            hintStyle: const TextStyle(color: Colors.white30),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            filled: true,
-                            fillColor: Colors.transparent,
-                          ),
-                          dropdownColor: const Color(0xFF0D1321),
-                          style: const TextStyle(color: Colors.white),
-                          iconEnabledColor: Colors.white,
-                          items: _availablePorts.isEmpty
-                              ? [
-                                  const DropdownMenuItem(
-                                    value: null,
-                                    child: Text(
-                                      'Tidak ada port tersedia',
-                                      style: TextStyle(color: Colors.white60),
-                                    ),
-                                  ),
-                                ]
-                              : _availablePorts
-                                    .map(
-                                      (p) => DropdownMenuItem(
-                                        value: p,
-                                        child: Text(
-                                          p,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                          ),
-                                        ),
-                                      ),
-                                    )
-                                    .toList(),
-                          onChanged: (v) {
-                            setState(() {
-                              _selectedPort = v;
-                              if (v != null) _portController.text = v;
-                            });
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Container(
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF12233d),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: IconButton(
-                          onPressed: () {
-                            setState(() {
-                              _availablePorts =
-                                  SerialPortListener.availablePorts;
-                              if (_availablePorts.isNotEmpty) {
-                                _selectedPort = _availablePorts.first;
-                                _portController.text = _selectedPort!;
-                              } else {
-                                _selectedPort = null;
-                                _portController.clear();
-                              }
-                            });
-                          },
-                          icon: const Icon(Icons.refresh, color: Colors.white),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      ElevatedButton.icon(
-                        onPressed: _isConnecting
-                            ? null
-                            : (_serialListener.isRunning
-                                  ? _disconnectSerial
-                                  : _connectSerial),
-                        icon: Icon(
-                          _serialListener.isRunning
-                              ? Icons.close_rounded
-                              : Icons.link_rounded,
-                          color: Colors.white,
-                        ),
-                        label: Text(
-                          _serialListener.isRunning ? 'Putuskan' : 'Hubungkan',
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFef4444),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 18,
-                            vertical: 14,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final isCompact = constraints.maxWidth < 1200;
-
-                      return Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                    // header moved into AppBar.bottom
+                    _buildSerialControlCard(isWide),
+                    const SizedBox(height: 18),
+                    if (isWide)
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Expanded(
-                            flex: isCompact ? 1 : 1,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                Expanded(child: _buildLogsCard()),
-                                const SizedBox(height: 12),
-                                SizedBox(
-                                  height: 130,
-                                  child: _buildSerialDebugCard(),
-                                ),
-                              ],
+                            flex: 3,
+                            child: SizedBox(
+                              height: 760,
+                              child: _buildTelemetryChartCard(),
                             ),
                           ),
                           const SizedBox(width: 14),
                           Expanded(
-                            flex: isCompact ? 2 : 2,
-                            child: _buildTelemetryMapCard(),
+                            flex: 4,
+                            child: SizedBox(
+                              height: 760,
+                              child: _buildTelemetryMapCard(),
+                            ),
                           ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            flex: isCompact ? 1 : 1,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                SizedBox(height: 240, child: _buildNodesCard()),
-                                const SizedBox(height: 14),
-                                Expanded(child: _buildTelemetryChartCard()),
-                              ],
+                          SizedBox(
+                            width: 300,
+                            child: SizedBox(
+                              height: 760,
+                              child: _buildNodesCard(),
                             ),
                           ),
                         ],
-                      );
-                    },
-                  ),
+                      )
+                    else
+                      Column(
+                        children: [
+                          SizedBox(
+                            height: 320,
+                            child: _buildTelemetryChartCard(),
+                          ),
+                          const SizedBox(height: 14),
+                          SizedBox(
+                            height: 360,
+                            child: _buildTelemetryMapCard(),
+                          ),
+                          const SizedBox(height: 14),
+                          SizedBox(height: 320, child: _buildNodesCard()),
+                        ],
+                      ),
+                  ],
                 ),
-              ],
-            ),
+              );
+            },
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSerialDebugCard() {
-    return Card(
-      color: const Color(0xFF141C29),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: Padding(
-        padding: const EdgeInsets.all(14.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Debug Serial',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Last raw line: ${_lastRawLine ?? '-'}',
-              style: const TextStyle(color: Colors.white60, fontSize: 12),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Recent lines:',
-              style: TextStyle(color: Colors.white70, fontSize: 12),
-            ),
-            const SizedBox(height: 6),
-            Expanded(
-              child: _rawHistory.isEmpty
-                  ? const Center(
-                      child: Text('-', style: TextStyle(color: Colors.white38)),
-                    )
-                  : ListView.separated(
-                      itemCount: _rawHistory.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 4),
-                      itemBuilder: (context, index) => Text(
-                        _rawHistory[index],
-                        style: const TextStyle(
-                          color: Colors.white60,
-                          fontSize: 11,
-                        ),
-                      ),
-                    ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Last error: ${_lastSerialError ?? '-'}',
-              style: const TextStyle(color: Colors.redAccent, fontSize: 12),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLogsCard() {
-    return Card(
-      color: const Color(0xFF141C29),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Text(
-                  'Status',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const Spacer(),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.greenAccent.withValues(alpha: 0.16),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: const Text(
-                    'Live',
-                    style: TextStyle(
-                      color: Colors.greenAccent,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: _logs.isEmpty
-                  ? const Center(
-                      child: Text(
-                        'Tidak ada data status yang tersedia.',
-                        style: TextStyle(color: Colors.white60),
-                      ),
-                    )
-                  : SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(minWidth: 780),
-                        child: DataTable(
-                          headingRowColor: WidgetStateColor.resolveWith(
-                            (states) => Colors.white12,
-                          ),
-                          dataRowColor: WidgetStateColor.resolveWith(
-                            (states) => const Color(0xFF111827),
-                          ),
-                          columnSpacing: 14,
-                          horizontalMargin: 8,
-                          columns: const [
-                            DataColumn(
-                              label: Text(
-                                'Node ID',
-                                style: TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                            DataColumn(
-                              label: Text(
-                                'Status',
-                                style: TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                            DataColumn(
-                              label: Text(
-                                'Latitude',
-                                style: TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                            DataColumn(
-                              label: Text(
-                                'Longitude',
-                                style: TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                            DataColumn(
-                              label: Text(
-                                'Sound',
-                                style: TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                            DataColumn(
-                              label: Text(
-                                'Vibration Cnt',
-                                style: TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                            DataColumn(
-                              label: Text(
-                                'Vibration Status',
-                                style: TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                            DataColumn(
-                              label: Text(
-                                'Sound Status',
-                                style: TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                            DataColumn(
-                              label: Text(
-                                'Timestamp',
-                                style: TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                          ],
-                          rows: _logs.map((row) {
-                            return DataRow(
-                              cells: [
-                                DataCell(
-                                  Text(
-                                    row['node_id']?.toString() ?? '-',
-                                    style: const TextStyle(color: Colors.white),
-                                  ),
-                                ),
-                                DataCell(
-                                  Text(
-                                    (row['status_sys']?.toString() ?? 'unknown')
-                                        .trim(),
-                                    style: const TextStyle(
-                                      color: Colors.white60,
-                                    ),
-                                  ),
-                                ),
-                                DataCell(
-                                  Text(
-                                    (row['latitude'] ?? 0).toString(),
-                                    style: const TextStyle(
-                                      color: Colors.white60,
-                                    ),
-                                  ),
-                                ),
-                                DataCell(
-                                  Text(
-                                    (row['longitude'] ?? 0).toString(),
-                                    style: const TextStyle(
-                                      color: Colors.white60,
-                                    ),
-                                  ),
-                                ),
-                                DataCell(
-                                  Text(
-                                    row['suara_val']?.toString() ?? '0',
-                                    style: const TextStyle(
-                                      color: Colors.greenAccent,
-                                    ),
-                                  ),
-                                ),
-                                DataCell(
-                                  Text(
-                                    row['getaran_count']?.toString() ?? '0',
-                                    style: const TextStyle(
-                                      color: Colors.amberAccent,
-                                    ),
-                                  ),
-                                ),
-                                DataCell(
-                                  Text(
-                                    row['vibration_status']?.toString() ?? '-',
-                                    style: const TextStyle(
-                                      color: Colors.white54,
-                                    ),
-                                  ),
-                                ),
-                                DataCell(
-                                  Text(
-                                    row['sound_status']?.toString() ?? '-',
-                                    style: const TextStyle(
-                                      color: Colors.white54,
-                                    ),
-                                  ),
-                                ),
-                                DataCell(
-                                  Text(
-                                    row['timestamp']?.toString() ?? '-',
-                                    style: const TextStyle(
-                                      color: Colors.white54,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            );
-                          }).toList(),
-                        ),
-                      ),
-                    ),
-            ),
-          ],
         ),
       ),
     );
@@ -759,7 +620,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Node Status',
+              'Daftar Node',
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 18,
@@ -780,44 +641,73 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       separatorBuilder: (_, _) => const SizedBox(height: 10),
                       itemBuilder: (context, index) {
                         final node = _nodes[index];
-                        final status =
-                            node['status_alat']?.toString() ?? 'unknown';
-                        final lastSeen = node['last_seen']?.toString() ?? '-';
-
-                        return Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF0d1a31),
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(color: Colors.white10),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                node['node_id']?.toString() ?? '-',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                        final nodeId = node['node_id']?.toString() ?? '-';
+                        final isSelected = nodeId == selectedNodeId;
+                        return InkWell(
+                          onTap: () {
+                            setState(() {
+                              selectedNodeId = nodeId;
+                            });
+                          },
+                          borderRadius: BorderRadius.circular(14),
+                          child: Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? const Color(0xFF1f2c47)
+                                  : const Color(0xFF0d1a31),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: isSelected
+                                    ? Colors.blueAccent
+                                    : Colors.white10,
                               ),
-                              const SizedBox(height: 6),
-                              Text(
-                                'Status: $status',
-                                style: const TextStyle(
-                                  color: Colors.white60,
-                                  fontSize: 12,
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        nodeId,
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'Terakhir: ${node['last_seen']?.toString() ?? '-'}',
+                                        style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                'Terakhir: $lastSeen',
-                                style: const TextStyle(
-                                  color: Colors.white54,
-                                  fontSize: 11,
-                                ),
-                              ),
-                            ],
+                                if (isSelected)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.blueAccent,
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
+                                    child: const Text(
+                                      'Aktif',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
                           ),
                         );
                       },
@@ -830,7 +720,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildTelemetryChartCard() {
-    final chartLogs = _logs.take(24).toList().reversed.toList();
+    final chartLogs = _logsForSelectedNode()
+        .take(24)
+        .toList()
+        .reversed
+        .toList();
     if (chartLogs.isEmpty) {
       return Card(
         color: const Color(0xFF141C29),
@@ -839,7 +733,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           padding: EdgeInsets.all(16),
           child: Center(
             child: Text(
-              'Belum ada data chart sensor.',
+              'Belum ada data chart sensor untuk node terpilih.',
               style: TextStyle(color: Colors.white60),
             ),
           ),
@@ -885,7 +779,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ],
             ),
             const SizedBox(height: 12),
-            Expanded(
+            SizedBox(
+              height: 220,
               child: Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -969,6 +864,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           DateTime.tryParse(timestampText) ??
           DateTime.fromMillisecondsSinceEpoch(0);
 
+      if (selectedNodeId != null && nodeId != selectedNodeId) {
+        continue;
+      }
+
       if (latitude == null || longitude == null) {
         continue;
       }
@@ -1022,7 +921,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
             const SizedBox(height: 12),
-            Expanded(
+            SizedBox(
+              height: 280,
               child: Container(
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(14),

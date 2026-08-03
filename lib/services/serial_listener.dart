@@ -300,18 +300,17 @@ class SerialPortListener {
     };
 
     try {
-      final existingNode = await database.findNode(nodeId);
-      await database.insertSensorLog(data);
-      await database.upsertNodeStatus(
+      final nodeCreated = await database.ensureNodeExists(
         nodeId: nodeId,
         statusAlat: statusSys.isEmpty
             ? 'unknown'
             : normalizeStatusForUi(statusSys),
         lastSeen: timestamp,
       );
+      await database.insertSensorLog(data);
 
-      if (existingNode == null) {
-        debugPrint('NODE CREATED: $nodeId');
+      if (nodeCreated) {
+        debugPrint('NODE CREATED & SYNCED: $nodeId');
       } else {
         debugPrint('NODE UPDATED: $nodeId');
       }

@@ -35,6 +35,22 @@ void main() {
       expect(parsed['sound_status'], 'SUARA_TERIAKAN');
     });
 
+    test('parses the provided yatim payload for first-node registration', () {
+      final parsed = SerialPortListener.parseSensorLine(
+        'yatim,standby,0.000000,0.000000,2241,0,aman,aman',
+      );
+
+      expect(parsed, isNotNull);
+      expect(parsed!['node_id'], 'yatim');
+      expect(parsed['status_sys'], 'standby');
+      expect(parsed['latitude'], 0.0);
+      expect(parsed['longitude'], 0.0);
+      expect(parsed['sound_value'], 2241);
+      expect(parsed['vibration_count'], 0);
+      expect(parsed['vibration_status'], 'aman');
+      expect(parsed['sound_status'], 'aman');
+    });
+
     test('ignores SYSTEM packets and keeps future payload compatibility', () {
       expect(
         SerialPortListener.parseSensorLine('SYSTEM:LISTENING_FOR_DATA...'),

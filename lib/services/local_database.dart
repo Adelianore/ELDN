@@ -112,6 +112,30 @@ class LocalDatabase {
     );
   }
 
+  Future<bool> ensureNodeExists({
+    required String nodeId,
+    required String statusAlat,
+    required String lastSeen,
+  }) async {
+    final existing = await findNode(nodeId);
+    if (existing != null) {
+      await db.update(
+        'tb_nodes',
+        {'status_alat': statusAlat, 'last_seen': lastSeen},
+        where: 'node_id = ?',
+        whereArgs: [nodeId],
+      );
+      return false;
+    }
+
+    await db.insert('tb_nodes', {
+      'node_id': nodeId,
+      'status_alat': statusAlat,
+      'last_seen': lastSeen,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    return true;
+  }
+
   Future<int> upsertNodeStatus({
     required String nodeId,
     required String statusAlat,
