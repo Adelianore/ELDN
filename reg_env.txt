@@ -1,0 +1,28 @@
+
+
+CLion            : C:\Program Files\JetBrains\CLion 2026.1.1\bin
+OneDrive         : C:\Users\Adelianore\OneDrive
+OneDriveConsumer : C:\Users\Adelianore\OneDrive
+Path             : C:\Users\Adelianore\AppData\Local\Microsoft\WindowsApps;C:\U
+                   sers\Adelianore\AppData\Local\Programs\Microsoft VS Code\bin
+                   ;C:\msys64\ucrt64\bin;C:\Users\Adelianore\AppData\Roaming\Co
+                   mposer\vendor\bin;C:\Users\Adelianore\OneDrive\Dokumen\Ardui
+                   no\hardware\espressi\esp32\tools\xtensa-esp32-elf\bin;C:\src
+                   \flutter\bin;C:\Program Files\JetBrains\CLion 2026.1.1\bin;C
+                   :\Users\Adelianore\AppData\Roaming\npm;C:\Users\Adelianore\A
+                   ppData\Local\Pub\Cache\bin;C:\Users\Adelianore\AppData\Local
+                   \Programs\Kiro\bin;C:\Program Files (x86)\Common Files\Oracl
+                   e\Java\java8path;;C:\Users\Adelianore\Documents\OLIVIA\.tool
+                   s\nuget
+TEMP             : C:\Users\Adelianore\AppData\Local\Temp
+TMP              : C:\Users\Adelianore\AppData\Local\Temp
+PSPath           : Microsoft.PowerShell.Core\Registry::HKEY_CURRENT_USER\Enviro
+                   nment
+PSParentPath     : Microsoft.PowerShell.Core\Registry::HKEY_CURRENT_USER
+PSChildName      : Environment
+PSDrive          : HKCU
+PSProvider       : Microsoft.PowerShell.Core\Registry
+
+
+
+
